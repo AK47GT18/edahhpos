@@ -30,6 +30,30 @@ if ($method === 'GET') {
         exit;
     }
 
+    if ($action === 'order_details') {
+        $order_id = intval($_GET['order_id'] ?? 0);
+        $order = getOrderDetails($order_id);
+        if ($order) {
+            echo json_encode([
+                'status' => 'success',
+                'order' => [
+                    'order_id' => $order['order_id'],
+                    'customer' => $order['first_name'] . ' ' . $order['last_name'],
+                    'total' => $order['total'],
+                    'payment_method' => $order['payment_method'],
+                    'status' => $order['status'],
+                    'collected' => $order['collected'],
+                    'created_at' => $order['created_at'],
+                    'updated_at' => $order['updated_at'],
+                    'items' => $order['items']
+                ]
+            ]);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => 'Order not found']);
+        }
+        exit;
+    }
+
     echo json_encode(['status' => 'error', 'message' => 'Unknown action']);
     exit;
 }

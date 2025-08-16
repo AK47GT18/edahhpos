@@ -411,3 +411,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <?php
 $conn->close();
 ?>
+<?php
+require_once 'db_connect.php';
+require_once 'functions.php';
+
+$order_id = intval($_GET['id'] ?? 0);
+$order = getOrderDetails($order_id); // You must implement this function to fetch all info
+
+if (isset($_GET['ajax'])) {
+    if ($order) {
+        echo json_encode([
+            'status' => 'success',
+            'order' => [
+                'order_id' => $order['order_id'],
+                'customer' => $order['first_name'] . ' ' . $order['last_name'],
+                'total' => $order['total'],
+                'payment_method' => $order['payment_method'],
+                'status' => $order['status'],
+                'collected' => $order['collected'],
+                'created_at' => $order['created_at'],
+                'updated_at' => $order['updated_at'],
+                'items' => $order['items'] // array of items
+            ]
+        ]);
+    } else {
+        echo json_encode(['status' => 'error', 'message' => 'Order not found']);
+    }
+    exit;
+}
+?>

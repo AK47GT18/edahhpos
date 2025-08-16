@@ -21,7 +21,8 @@ class CashierDashboard {
 
     initConfirmPaymentButtons() {
         document.addEventListener('click', async (e) => {
-            const confirmBtn = e.target.closest('.confirm-payment-btn, .mark-collected');
+            // Only handle .confirm-payment-btn, NOT .mark-collected here!
+            const confirmBtn = e.target.closest('.confirm-payment-btn');
             if (!confirmBtn) return;
             e.preventDefault();
 
@@ -234,6 +235,56 @@ class CashierDashboard {
                     btn.innerHTML = '<i class="fas fa-box"></i> Mark as Collected';
                 });
             }
+        });
+
+        // Modal logic
+        document.body.addEventListener('click', async function(e) {
+            const btn = e.target.closest('.view-order-details');
+            if (btn) {
+                e.preventDefault();
+                const orderId = btn.getAttribute('data-order-id');
+                const modal = document.getElementById('order-details-modal');
+                const modalBody = document.getElementById('order-details-body');
+                modalBody.innerHTML = '<div style="text-align:center;padding:30px;"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+                modal.style.display = 'flex';
+
+                // Fetch order details via AJAX
+                try {
+                    const resp = await fetch(`orders_manager.php?action=order_details&order_id=${orderId}`);
+                    const data = await resp.json();
+                    if (data.status === 'success') {
+                        let html = `<h2>Order #${data.order.order_id}</h2>`;
+                        html += `<p><strong>Customer:</strong> ${data.order.customer}</p>`;
+                        html += `<p><strong>Amount:</strong> MWK${parseFloat(data.order.total).toLocaleString()}</p>`;
+                        html += `<p><strong>Payment Method:</strong> ${data.order.payment_method}</p>`;
+                        html += `<p><strong>Status:</strong> ${data.order.status}</p>`;
+                        html += `<p><strong>Collected:</strong> ${data.order.collected}</p>`;
+                        html += `<p><strong>Created At:</strong> ${data.order.created_at}</p>`;
+                        html += `<p><strong>Updated At:</strong> ${data.order.updated_at}</p>`;
+                        if (data.order.items && data.order.items.length) {
+                            html += `<h3>Items</h3><ul>`;
+                            data.order.items.forEach(item => {
+                                html += `<li>${item.name} x${item.quantity} @ MWK${parseFloat(item.price).toLocaleString()}</li>`;
+                            });
+                            html += `</ul>`;
+                        }
+                        modalBody.innerHTML = html;
+                    } else {
+                        modalBody.innerHTML = `<div style="color:red;">${data.message || 'Failed to load order details.'}</div>`;
+                    }
+                } catch (err) {
+                    modalBody.innerHTML = `<div style="color:red;">Error loading order details.</div>`;
+                }
+            }
+            // Close modal
+            if (e.target.id === 'close-order-modal') {
+                document.getElementById('order-details-modal').style.display = 'none';
+            }
+        });
+
+        // Optional: Close modal on outside click
+        document.getElementById('order-details-modal').addEventListener('click', function(e) {
+            if (e.target === this) this.style.display = 'none';
         });
     }
 

@@ -652,4 +652,39 @@ function markOrderAsCollected($order_id) {
     $stmt->close();
     return $success && ($affected > 0);
 }
+
+/**
+ * Get order details by order ID
+ */
+function getOrderDetails($order_id) {
+    global $conn;
+    $stmt = $conn->prepare("SELECT o.*, u.first_name, u.last_name 
+        FROM orders o 
+        LEFT JOIN users u ON o.user_id = u.user_id 
+        WHERE o.order_id = ?");
+    $stmt->bind_param("i", $order_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $order = $result->fetch_assoc();
+    $stmt->close();
+
+    if (!$order) return null;
+
+    // Fetch items for the order
+    $items = [];
+    $stmt2 = $conn->prepare("SELECT oi.product_id, p.name, oi.quantity, oi.price 
+        FROM order_items oi 
+        LEFT JOIN products p ON oi.product_id = p.product_id 
+        WHERE oi.order_id = ?");
+    $stmt2->bind_param("i", $order_id);
+    $stmt2->execute();
+    $res2 = $stmt2->get_result();
+    while ($row = $res2->fetch_assoc()) {
+        $items[] = $row;
+    }
+    $stmt2->close();
+
+    $order['items'] = $items;
+    return $order;
+}
 ?>

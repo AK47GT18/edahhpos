@@ -724,8 +724,8 @@ foreach ($_SESSION['cart'] as $item) {
                                             </td>
                                             <td>
                                                 <div style="display: flex; gap: 5px;">
-                                                    <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm">
-                                                        <i class="fas fa-eye"></i> View
+                                                    <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm view-order-details" data-order-id="<?php echo $order['order_id']; ?>">
+                                                        <i class="fas fa-eye"></i> View Details
                                                     </a>
                                                     <button class="btn btn-primary btn-sm" data-action="print-receipt" data-order-id="<?php echo $order['order_id']; ?>">
                                                         <i class="fas fa-print"></i> Print
@@ -854,7 +854,7 @@ foreach ($_SESSION['cart'] as $item) {
                                                         data-csrf-token="<?php echo $_SESSION['csrf_token']; ?>">
                                                     <i class="fas fa-box"></i> Mark as Collected
                                                 </button>
-                                                <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm">
+                                                <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm view-order-details" data-order-id="<?php echo $order['order_id']; ?>">
                                                     <i class="fas fa-eye"></i> View Details
                                                 </a>
                                             </div>
@@ -909,7 +909,7 @@ foreach ($_SESSION['cart'] as $item) {
                                         </td>
                                         <td>
                                             <div class="btn-group">
-                                                <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm">
+                                                <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm view-order-details" data-order-id="<?php echo $order['order_id']; ?>">
                                                     <i class="fas fa-eye"></i> View Details
                                                 </a>
                                                 <button class="btn btn-primary btn-sm" data-action="print-receipt" data-order-id="<?php echo $order['order_id']; ?>">
@@ -960,6 +960,28 @@ foreach ($_SESSION['cart'] as $item) {
         </div>
 
     </main>
+
+    <!-- Order Details Modal -->
+    <div id="order-details-modal" class="modal" style="display:none;">
+      <div class="modal-content">
+        <span class="close-modal" id="close-order-modal">&times;</span>
+        <div id="order-details-body">
+          <!-- Order details will be loaded here -->
+        </div>
+      </div>
+    </div>
+    <style>
+    .modal {
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 9999;
+    }
+    .modal-content {
+      background: #fff; padding: 30px; border-radius: 10px; min-width: 350px; max-width: 95vw; max-height: 90vh; overflow-y: auto; position: relative;
+    }
+    .close-modal {
+      position: absolute; top: 10px; right: 20px; font-size: 2rem; color: #888; cursor: pointer;
+    }
+    </style>
 
 <script src="script.js"></script>
 
