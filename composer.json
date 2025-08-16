@@ -2,7 +2,7 @@
     "require": {
         "php": ">=7.4",
         "phpoffice/phpword": "^1.0",
-        "tecnickcom/tcpdf": "^6.4"
+        "tecnickcom/tcpdf": "^6.4",
+        "phpmailer/phpmailer": "^6.10"
     }
 }
-

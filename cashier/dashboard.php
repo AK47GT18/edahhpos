@@ -313,36 +313,83 @@ if (isset($_POST['ajax'])) {
         $order_id = filter_input(INPUT_POST, 'order_id', FILTER_VALIDATE_INT);
         $csrf_token = sanitizeInput($_POST['csrf_token'] ?? '');
 
-        $response = [
-            'status' => 'error',
-            'message' => 'Failed to confirm correction.',
-            'message_type' => 'danger',
-            'order_id' => $order_id,
-            'order_total' => 0
-        ];
-
         if (!validateCsrfToken($csrf_token)) {
-            $response['message'] = "Invalid security token.";
-            echo json_encode($response);
+            echo json_encode([
+                'status' => 'error',
+                'message' => 'Invalid security token'
+            ]);
             exit;
         }
 
-        if ($order_id) {
-            $order = getOrderById($order_id);
-            if ($order && confirmOrderCorrection($order_id)) {
-                logActivity($_SESSION['user_id'], "Confirmed correction for order #$order_id", 'order_correction');
-                $response = [
-                    'status' => 'success',
-                    'message' => "Order #$order_id correction confirmed successfully.",
-                    'message_type' => 'success',
-                    'order_id' => $order_id,
-                    'order_total' => $order['total']
-                ];
-            } else {
-                $response['message'] = "Failed to confirm correction for order #$order_id.";
-            }
+        if (!$order_id) {
+            echo json_encode([
+                'status' => 'error',
+                'message' => 'Invalid order ID'
+            ]);
+            exit;
         }
-        echo json_encode($response);
+
+        try {
+            // Start transaction
+            $conn->begin_transaction();
+
+            // Update order status
+            $stmt = $conn->prepare("
+                UPDATE orders 
+                SET status = 'completed' 
+                WHERE order_id = ? AND status = 'pending'
+            ");
+            
+            if (!$stmt) {
+                throw new Exception("Failed to prepare status update query");
+            }
+
+            $stmt->bind_param('i', $order_id);
+            
+            if (!$stmt->execute()) {
+                throw new Exception("Failed to update order status");
+            }
+            
+            if ($stmt->affected_rows === 0) {
+                throw new Exception("Order not found or already completed");
+            }
+
+            $stmt->close();
+
+            // Log the activity
+            logActivity($_SESSION['user_id'], "Confirmed payment for order #$order_id", 'payment_confirmation');
+
+            // Commit transaction
+            $conn->commit();
+
+            echo json_encode([
+                'status' => 'success',
+                'message' => "Payment confirmed for order #$order_id",
+                'order_id' => $order_id
+            ]);
+        } catch (Exception $e) {
+            $conn->rollback();
+            error_log("Error confirming payment: " . $e->getMessage());
+            echo json_encode([
+                'status' => 'error',
+                'message' => 'Database error: ' . $e->getMessage()
+            ]);
+        }
+        exit;
+    } elseif ($_POST['ajax'] === 'mark_collected') {
+        $order_id = filter_input(INPUT_POST, 'order_id', FILTER_VALIDATE_INT);
+        $csrf_token = sanitizeInput($_POST['csrf_token'] ?? '');
+
+        if (!validateCsrfToken($csrf_token)) {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid security token']);
+            exit;
+        }
+
+        if ($order_id && markOrderAsCollected($order_id)) {
+            echo json_encode(['status' => 'success', 'message' => "Order #{$order_id} marked as collected"]);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => 'Failed to mark order as collected']);
+        }
         exit;
     }
 }
@@ -375,10 +422,12 @@ if (isset($_GET['ajax'])) {
         exit;
     } elseif ($_GET['ajax'] === 'completed_orders_data') {
         $completed_orders = getCompletedOrders();
+        error_log("Sending completed orders response: " . json_encode($completed_orders));
         echo json_encode(['status' => 'success', 'data' => $completed_orders]);
         exit;
     } elseif ($_GET['ajax'] === 'pending_orders_data') {
         $pending_orders = getCustomerPendingOrders();
+        error_log("Sending pending orders response: " . json_encode($pending_orders));
         echo json_encode(['status' => 'success', 'data' => $pending_orders]);
         exit;
     } elseif ($_GET['ajax'] === 'sales_report_data') {
@@ -475,7 +524,6 @@ foreach ($_SESSION['cart'] as $item) {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
     <link rel="stylesheet" href="style.css">
     <script src="https://in.paychangu.com/js/popup.js"></script>
-    <script src="script.js"></script>
 </head>
 <body>
 
@@ -668,8 +716,11 @@ foreach ($_SESSION['cart'] as $item) {
                                                 </span>
                                             </td>
                                             <td>
-                                                <?php echo date('M j, Y', strtotime($order['updated_at'])); ?><br>
-                                                <small><?php echo date('H:i', strtotime($order['updated_at'])); ?></small>
+                                                <?php 
+                                                    $timestamp = !empty($order['updated_at']) ? $order['updated_at'] : $order['created_at'];
+                                                    echo date('M j, Y', strtotime($timestamp)); 
+                                                ?><br>
+                                                <small><?php echo date('H:i', strtotime($timestamp)); ?></small>
                                             </td>
                                             <td>
                                                 <div style="display: flex; gap: 5px;">
@@ -758,55 +809,38 @@ foreach ($_SESSION['cart'] as $item) {
 
             <!-- Pending Orders Section -->
             <section id="pending-orders-section" class="content-section">
-                <h2 class="section-title"><i class="fas fa-clock"></i> Pending Orders (<span id="pending-count"><?php echo count($pending_orders_data); ?></span>)</h2>
+                <h2 class="section-title">
+                    <i class="fas fa-clock"></i> Orders Pending Collection
+                    (<span id="pending-count"><?php echo count($pending_orders_data); ?></span>)
+                </h2>
                 
-                <?php if (empty($pending_orders_data)): ?>
-                    <div style="text-align: center; padding: 40px;">
-                        <i class="fas fa-check-circle" style="font-size: 4rem; color: #28a745; margin-bottom: 20px;"></i>
-                        <h3>No Pending Orders</h3>
-                        <p>All orders have been processed. Great job!</p>
-                        <button class="btn btn-info" onclick="dashboard.showSection('new-sale')">
-                            <i class="fas fa-barcode"></i> Create New Order
-                        </button>
-                    </div>
-                <?php else: ?>
-                    <div class="table-container">
-                        <table id="pending-orders-table">
-                            <thead>
+                <div class="table-container">
+                    <table id="pending-orders-table">
+                        <thead>
+                            <tr>
+                                <th>Order ID</th>
+                                <th>Amount</th>
+                                <th>Payment Method</th>
+                                <th>Completed At</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (empty($pending_orders_data)): ?>
                                 <tr>
-                                    <th>Order ID</th>
-                                    <th>Customer</th>
-                                    <th>Amount</th>
-                                    <th>Payment Method</th>
-                                    <th>Created</th>
-                                    <th>Actions</th>
+                                    <td colspan="5" class="text-center">
+                                        <p>No orders pending collection</p>
+                                    </td>
                                 </tr>
-                            </thead>
-                            <tbody>
+                            <?php else: ?>
                                 <?php foreach ($pending_orders_data as $order): ?>
                                     <tr data-order-id="<?php echo $order['order_id']; ?>">
+                                        <td><strong>#<?php echo $order['order_id']; ?></strong></td>
+                                        <td><strong>MWK<?php echo number_format($order['total'], 2); ?></strong></td>
                                         <td>
-                                            <strong>#<?php echo $order['order_id']; ?></strong>
-                                        </td>
-                                        <td>
-                                            <?php echo htmlspecialchars(($order['first_name'] ?? '') . ' ' . ($order['last_name'] ?? '')); ?>
-                                        </td>
-                                        <td>
-                                            <strong>MWK<?php echo number_format($order['total'], 2); ?></strong>
-                                        </td>
-                                        <td>
-                                            <span class="payment-method <?php echo $order['payment_method']; ?>">
-                                                <?php 
-                                                $icons = [
-                                                    'cash' => 'fas fa-money-bill-wave',
-                                                    'mpamba' => 'fas fa-mobile-alt',
-                                                    'airtel_money' => 'fas fa-mobile-alt',
-                                                    'card' => 'fas fa-credit-card'
-                                                ];
-                                                $icon = $icons[$order['payment_method']] ?? 'fas fa-question';
-                                                ?>
-                                                <i class="<?php echo $icon; ?>"></i>
-                                                <?php echo ucfirst(str_replace('_', ' ', $order['payment_method'])); ?>
+                                            <span class="payment-method <?php echo strtolower($order['payment_method']); ?>">
+                                                <i class="fas fa-<?php echo $order['payment_method'] === 'cash' ? 'money-bill-wave' : 'mobile-alt'; ?>"></i>
+                                                <?php echo ucfirst($order['payment_method']); ?>
                                             </span>
                                         </td>
                                         <td>
@@ -814,90 +848,69 @@ foreach ($_SESSION['cart'] as $item) {
                                             <small><?php echo date('H:i', strtotime($order['created_at'])); ?></small>
                                         </td>
                                         <td>
-                                            <div style="display: flex; gap: 5px;">
-                                                <form class="confirm-correction-form" data-order-id="<?php echo $order['order_id']; ?>">
-                                                    <input type="hidden" name="order_id" value="<?php echo $order['order_id']; ?>">
-                                                    <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
-                                                    <input type="hidden" name="ajax" value="confirm_correction">
-                                                    <button type="submit" name="confirm_correction" class="btn btn-success btn-sm" data-order-id="<?php echo $order['order_id']; ?>">
-                                                        <i class="fas fa-check"></i> Confirm Correction
-                                                    </button>
-                                                </form>
+                                            <div class="btn-group">
+                                                <button type="button" class="btn btn-primary btn-sm mark-collected"
+                                                        data-order-id="<?php echo $order['order_id']; ?>"
+                                                        data-csrf-token="<?php echo $_SESSION['csrf_token']; ?>">
+                                                    <i class="fas fa-box"></i> Mark as Collected
+                                                </button>
                                                 <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm">
-                                                    <i class="fas fa-eye"></i> View
+                                                    <i class="fas fa-eye"></i> View Details
                                                 </a>
                                             </div>
                                         </td>
                                     </tr>
                                 <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <div style="margin-top: 20px; text-align: center;">
-                        <p><strong>Total Pending Amount: <span id="total-pending-amount">MWK<?php 
-                            $total_pending = array_sum(array_column($pending_orders_data, 'total'));
-                            echo number_format($total_pending, 2); 
-                        ?></span></strong></p>
-                    </div>
-                <?php endif; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </section>
 
             <!-- Completed Orders Section -->
             <section id="completed-orders-section" class="content-section">
-                <h2 class="section-title"><i class="fas fa-check-circle"></i> Completed Orders (<span id="completed-count"><?php echo count($recent_orders); ?></span>)</h2>
+                <h2 class="section-title">
+                    <i class="fas fa-check-circle"></i> Collected Orders
+                    (<span id="completed-count"><?php echo count($recent_orders); ?></span>)
+                </h2>
                 
-                <?php if (empty($recent_orders)): ?>
-                    <div style="text-align: center; padding: 40px;">
-                        <i class="fas fa-check-circle" style="font-size: 4rem; color: var(--success-color); margin-bottom: 20px;"></i>
-                        <h3>No Completed Orders</h3>
-                        <p>No orders have been completed yet.</p>
-                        <button class="btn btn-info" onclick="dashboard.showSection('new-sale')">
-                            <i class="fas fa-barcode"></i> Create New Order
-                        </button>
-                    </div>
-                <?php else: ?>
-                    <div class="table-container">
-                        <table id="completed-orders-table">
-                            <thead>
+                <div class="table-container">
+                    <table id="completed-orders-table">
+                        <thead>
+                            <tr>
+                                <th>Order ID</th>
+                                <th>Amount</th>
+                                <th>Payment Method</th>
+                                <th>Collected At</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (empty($recent_orders)): ?>
                                 <tr>
-                                    <th>Order ID</th>
-                                    <th>Customer</th>
-                                    <th>Amount</th>
-                                    <th>Payment Method</th>
-                                    <th>Completed At</th>
-                                    <th>Actions</th>
+                                    <td colspan="5" class="text-center">
+                                        <p>No collected orders</p>
+                                    </td>
                                 </tr>
-                            </thead>
-                            <tbody>
+                            <?php else: ?>
                                 <?php foreach ($recent_orders as $order): ?>
                                     <tr data-order-id="<?php echo $order['order_id']; ?>">
                                         <td><strong>#<?php echo $order['order_id']; ?></strong></td>
-                                        <td><?php echo htmlspecialchars(($order['first_name'] ?? '') . ' ' . ($order['last_name'] ?? '')); ?></td>
-                                        <td><strong class="order-amount">MWK<?php echo number_format($order['total'], 2); ?></strong></td>
+                                        <td><strong>MWK<?php echo number_format($order['total'], 2); ?></strong></td>
                                         <td>
-                                            <span class="payment-method <?php echo $order['payment_method']; ?>">
-                                                <?php 
-                                                $icons = [
-                                                    'cash' => 'fas fa-money-bill-wave',
-                                                    'mpamba' => 'fas fa-mobile-alt',
-                                                    'airtel_money' => 'fas fa-mobile-alt',
-                                                    'card' => 'fas fa-credit-card'
-                                                ];
-                                                $icon = $icons[$order['payment_method']] ?? 'fas fa-question';
-                                                ?>
-                                                <i class="<?php echo $icon; ?>"></i>
-                                                <?php echo ucfirst(str_replace('_', ' ', $order['payment_method'])); ?>
+                                            <span class="payment-method <?php echo strtolower($order['payment_method']); ?>">
+                                                <i class="fas fa-<?php echo $order['payment_method'] === 'cash' ? 'money-bill-wave' : 'mobile-alt'; ?>"></i>
+                                                <?php echo ucfirst($order['payment_method']); ?>
                                             </span>
                                         </td>
                                         <td>
-                                            <?php echo date('M j, Y', strtotime($order['updated_at'])); ?><br>
-                                            <small><?php echo date('H:i', strtotime($order['updated_at'])); ?></small>
+                                            <?php echo date('M j, Y', strtotime($order['created_at'])); ?><br>
+                                            <small><?php echo date('H:i', strtotime($order['created_at'])); ?></small>
                                         </td>
                                         <td>
-                                            <div style="display: flex; gap: 5px;">
+                                            <div class="btn-group">
                                                 <a href="order_details.php?id=<?php echo $order['order_id']; ?>" class="btn btn-info btn-sm">
-                                                    <i class="fas fa-eye"></i> View
+                                                    <i class="fas fa-eye"></i> View Details
                                                 </a>
                                                 <button class="btn btn-primary btn-sm" data-action="print-receipt" data-order-id="<?php echo $order['order_id']; ?>">
                                                     <i class="fas fa-print"></i> Print
@@ -906,17 +919,10 @@ foreach ($_SESSION['cart'] as $item) {
                                         </td>
                                     </tr>
                                 <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <div style="margin-top: 20px; text-align: center;">
-                        <p><strong>Total Completed Amount: MWK<span id="total-completed-amount"><?php 
-                            $total_completed = array_sum(array_column($recent_orders, 'total'));
-                            echo number_format($total_completed, 2); 
-                        ?></span></strong></p>
-                    </div>
-                <?php endif; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </section>
 
             <!-- Sales Report Section -->
@@ -955,625 +961,8 @@ foreach ($_SESSION['cart'] as $item) {
 
     </main>
 
-   <script>
-class CashierDashboard {
-    constructor() {
-        this.initEventListeners();
-    }
+<script src="script.js"></script>
 
-    initEventListeners() {
-        // Handle barcode input
-        const barcodeInput = document.getElementById('barcode-input');
-        if (barcodeInput) {
-            barcodeInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    this.scanBarcode();
-                }
-            });
-        }
-
-        // Handle add to cart
-        const addToCartBtn = document.getElementById('add-to-cart-btn');
-        if (addToCartBtn) {
-            addToCartBtn.addEventListener('click', () => this.addToCart());
-        }
-
-        // Handle cart operations
-        document.addEventListener('click', (e) => {
-            if (e.target.classList.contains('remove-item')) {
-                this.removeFromCart(e.target.dataset.index);
-            } else if (e.target.classList.contains('increase-qty')) {
-                this.updateQuantity(e.target.dataset.index, 1);
-            } else if (e.target.classList.contains('decrease-qty')) {
-                this.updateQuantity(e.target.dataset.index, -1);
-            }
-        });
-
-        // Handle clear cart
-        const clearCartBtn = document.getElementById('clear-cart-btn');
-        if (clearCartBtn) {
-            clearCartBtn.addEventListener('click', () => this.clearCart());
-        }
-
-        // Handle payment processing
-        const processPaymentBtn = document.getElementById('process-payment-btn');
-        if (processPaymentBtn) {
-            processPaymentBtn.addEventListener('click', () => this.processPayment());
-            // Enable/disable button based on payment method and cart
-            document.getElementById('payment-method').addEventListener('change', () => {
-                processPaymentBtn.disabled = !this.validatePaymentForm();
-            });
-        }
-
-        // Handle 'S' keypress for payment
-        document.addEventListener('keypress', (e) => {
-            if (e.key.toLowerCase() === 's' && this.validatePaymentForm()) {
-                this.processPayment();
-            }
-        });
-    }
-
-    async scanBarcode() {
-        const barcodeInput = document.getElementById('barcode-input');
-        const barcode = barcodeInput.value.trim();
-        if (!barcode) return;
-        try {
-            const response = await fetch(`?ajax=product_details&barcode=${encodeURIComponent(barcode)}`);
-            const data = await response.json();
-            const preview = document.getElementById('product-preview');
-            if (data.status === 'success') {
-                document.getElementById('product-name').textContent = data.data.name;
-                document.getElementById('product-price').textContent = `MWK${data.data.price}`;
-                document.getElementById('product-category').textContent = data.data.category;
-                preview.style.display = 'block';
-                document.getElementById('add-to-cart-btn').dataset.productId = data.data.product_id;
-            } else {
-                preview.style.display = 'none';
-                this.showToast(data.message, 'error');
-            }
-        } catch (error) {
-            console.error('Error scanning barcode:', error);
-            this.showToast('Error scanning barcode', 'error');
-        }
-    }
-
-    async addToCart() {
-        const barcodeInput = document.getElementById('barcode-input');
-        const barcode = barcodeInput.value.trim();
-        if (!barcode) {
-            this.showToast('Please enter a barcode', 'error');
-            return;
-        }
-        const formData = new FormData();
-        formData.append('ajax', 'add_to_cart');
-        formData.append('barcode', barcode);
-        formData.append('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
-        try {
-            const response = await fetch('', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
-            if (data.status === 'success') {
-                this.showToast(data.message, data.message_type);
-                this.refreshCart();
-                barcodeInput.value = '';
-                document.getElementById('product-preview').style.display = 'none';
-            } else {
-                this.showToast(data.message, data.message_type);
-            }
-        } catch (error) {
-            console.error('Error adding to cart:', error);
-            this.showToast('Error adding to cart', 'error');
-        }
-    }
-
-    async removeFromCart(index) {
-        const formData = new FormData();
-        formData.append('ajax', 'cart_operation');
-        formData.append('operation', 'remove_item');
-        formData.append('item_index', index);
-        try {
-            const response = await fetch('', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
-            this.showToast(data.message, data.status);
-            if (data.status === 'success') {
-                this.refreshCart();
-            }
-        } catch (error) {
-            console.error('Error removing item:', error);
-            this.showToast('Error removing item', 'error');
-        }
-    }
-
-    async updateQuantity(index, change) {
-        const quantitySpan = document.querySelector(`.cart-item[data-index="${index}"] .quantity`);
-        const currentQuantity = parseInt(quantitySpan.textContent);
-        const newQuantity = currentQuantity + change;
-        if (newQuantity < 1) return;
-        const formData = new FormData();
-        formData.append('ajax', 'cart_operation');
-        formData.append('operation', 'update_quantity');
-        formData.append('item_index', index);
-        formData.append('quantity', newQuantity);
-        try {
-            const response = await fetch('', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
-            if (data.status === 'success') {
-                this.showToast(data.message, 'success');
-                this.refreshCart();
-            } else {
-                this.showToast(data.message, 'error');
-            }
-        } catch (error) {
-            console.error('Error updating quantity:', error);
-            this.showToast('Error updating quantity', 'error');
-        }
-    }
-
-    async clearCart() {
-        const formData = new FormData();
-        formData.append('ajax', 'cart_operation');
-        formData.append('operation', 'clear');
-        try {
-            const response = await fetch('', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
-            this.showToast(data.message, data.status);
-            if (data.status === 'success') {
-                this.refreshCart();
-            }
-        } catch (error) {
-            console.error('Error clearing cart:', error);
-            this.showToast('Error clearing cart', 'error');
-        }
-    }
-
-    validatePaymentForm() {
-        const paymentMethod = document.getElementById('payment-method').value;
-        const cartItems = document.getElementById('cart-items-list').children;
-        return paymentMethod !== '' && cartItems.length > 0 && !document.querySelector('.empty-cart-message');
-    }
-
-    async processPayment() {
-        const paymentMethod = document.getElementById('payment-method').value;
-        if (!this.validatePaymentForm()) {
-            this.showToast('Please select a payment method and ensure cart is not empty', 'error');
-            return;
-        }
-        const formData = new FormData();
-        formData.append('ajax', 'process_payment');
-        formData.append('csrf_token', '<?php echo generateCsrfToken(); ?>');
-        formData.append('payment_method', paymentMethod);
-        try {
-            const response = await fetch('', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
-            if (data.status === 'pending' && paymentMethod === 'Mobile Transfer') {
-                // Store cart data in session for callback.php
-                const cartData = {
-                    items: <?php echo json_encode($_SESSION['cart']); ?>,
-                    email: '<?php echo addslashes($_SESSION['user_email']); ?>',
-                    firstname: '<?php echo addslashes($_SESSION['user_name']); ?>',
-                    surname: '',
-                    amount: parseFloat(data.total.replace(/,/g, ''))
-                };
-                // Send cart data to server to store in session
-                const sessionFormData = new FormData();
-                sessionFormData.append('ajax', 'store_cart_data');
-                sessionFormData.append('csrf_token', '<?php echo generateCsrfToken(); ?>');
-                sessionFormData.append('cart_data', JSON.stringify(cartData));
-                sessionFormData.append('transaction_ref', data.tx_ref);
-                await fetch('', {
-                    method: 'POST',
-                    body: sessionFormData
-                });
-                this.initiatePaychanguPayment(data);
-            } else if (data.status === 'success') {
-                this.showToast(data.message, 'success');
-                this.refreshCart();
-                this.showSection('completed-orders');
-                this.refreshStats();
-            } else {
-                this.showToast(data.message, 'error');
-            }
-        } catch (error) {
-            console.error('Error processing payment:', error);
-            this.showToast('Error processing payment', 'error');
-        }
-    }
-
-    initiatePaychanguPayment(data) {
-        const userName = '<?php echo addslashes($_SESSION['user_name']); ?>';
-        const userEmail = '<?php echo addslashes($_SESSION['user_email']); ?>';
-        const total = parseFloat(data.total.replace(/,/g, ''));
-        PaychanguCheckout({
-            public_key: "pub-test-HYSBQpa5K91mmXMHrjhkmC6mAjObPJ2u",
-            tx_ref: data.tx_ref,
-            amount: total,
-            currency: "MWK",
-            callback_url: "callback.php",
-            return_url: "return.php",
-            customer: {
-                email: userEmail,
-                first_name: userName,
-                last_name: ""
-            },
-            customization: {
-                title: "Auntie Eddah POS Payment",
-                description: `Payment for Order #${data.order_id}`
-            },
-            meta: {
-                uuid: data.order_id,
-                response: "Payment for order"
-            }
-        });
-
-        // Handle payment response
-        window.addEventListener('message', async (event) => {
-            if (event.origin === 'https://in.paychangu.com' && event.data.status) {
-                const response = event.data;
-                if (response.status === 'success') {
-                    const formData = new FormData();
-                    formData.append('ajax', 'process_payment');
-                    formData.append('csrf_token', '<?php echo generateCsrfToken(); ?>');
-                    formData.append('payment_method', 'Mobile Transfer');
-                    formData.append('tx_ref', response.tx_ref);
-                    try {
-                        const result = await fetch('', {
-                            method: 'POST',
-                            body: formData
-                        });
-                        const data = await result.json();
-                        if (data.status === 'success') {
-                            this.showToast(data.message, 'success');
-                            this.refreshCart();
-                            this.showSection('completed-orders');
-                            this.refreshPendingOrdersData();
-                            this.refreshStats();
-                        } else {
-                            this.showToast(data.message, 'error');
-                        }
-                    } catch (error) {
-                        console.error('Error verifying payment:', error);
-                        this.showToast('Error verifying payment', 'error');
-                    }
-                } else {
-                    this.showToast('Payment was not completed', 'error');
-                }
-            }
-        }, { once: true });
-    }
-
-    async refreshCart() {
-        try {
-            const response = await fetch('?ajax=cart_data');
-            const data = await response.json();
-            if (data.status === 'success') {
-                const cartList = document.getElementById('cart-items-list');
-                cartList.innerHTML = '';
-                if (data.cart_count === 0) {
-                    cartList.innerHTML = '<li class="empty-cart-message">Your cart is empty. Scan a product to add.</li>';
-                } else {
-                    data.cart.forEach((item, index) => {
-                        const li = document.createElement('li');
-                        li.className = 'cart-item';
-                        li.dataset.index = index;
-                        li.innerHTML = `
-                            <div class="item-details">
-                                <span class="item-name">${item.name}</span>
-                                <span class="item-price">MWK${Number(item.price).toFixed(2)}</span>
-                            </div>
-                            <div class="item-controls">
-                                <button class="btn btn-sm btn-secondary decrease-qty" data-index="${index}">-</button>
-                                <span class="quantity">${item.quantity}</span>
-                                <button class="btn btn-sm btn-secondary increase-qty" data-index="${index}">+</button>
-                                <button class="btn btn-sm btn-danger remove-item" data-index="${index}">
-                                    <i class="fas fa-trash"></i>
-                                </button>
-                            </div>
-                        `;
-                        cartList.appendChild(li);
-                    });
-                }
-                document.getElementById('cart-count').textContent = data.cart_count;
-                document.getElementById('cart-total').textContent = `MWK${data.cart_total}`;
-                document.getElementById('process-payment-btn').disabled = !this.validatePaymentForm();
-            }
-        } catch (error) {
-            console.error('Error refreshing cart:', error);
-            this.showToast('Error refreshing cart', 'error');
-        }
-    }
-
-    async refreshStats() {
-        try {
-            const response = await fetch('?ajax=stats');
-            const data = await response.json();
-            if (data.status === 'success') {
-                document.getElementById('orders-today').textContent = data.stats.orders_today;
-                document.getElementById('pending-payments').textContent = data.stats.pending_payments;
-                document.getElementById('transactions-count').textContent = data.stats.transactions_count;
-                document.getElementById('total-sales').textContent = `MWK${Number(data.stats.total_sales_today).toFixed(2)}`;
-            } else {
-                this.showToast(data.message, 'error');
-            }
-        } catch (error) {
-            console.error('Error refreshing stats:', error);
-            this.showToast('Error refreshing stats', 'error');
-        }
-    }
-
-    async refreshPendingOrdersData() {
-        try {
-            const response = await fetch('?ajax=pending_orders_data');
-            const data = await response.json();
-            if (data.status === 'success') {
-                const tableBody = document.querySelector('#pending-orders-table tbody');
-                tableBody.innerHTML = '';
-                if (data.data.length === 0) {
-                    tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No pending orders.</td></tr>';
-                } else {
-                    data.data.forEach(order => {
-                        const tr = document.createElement('tr');
-                        tr.dataset.orderId = order.order_id;
-                        tr.innerHTML = `
-                            <td><strong>#${order.order_id}</strong></td>
-                            <td>${order.first_name || ''} ${order.last_name || ''}</td>
-                            <td><strong>MWK${Number(order.total).toFixed(2)}</strong></td>
-                            <td>
-                                <span class="payment-method ${order.payment_method}">
-                                    <i class="${this.getPaymentIcon(order.payment_method)}"></i>
-                                    ${this.capitalizeWords(order.payment_method.replace('_', ' '))}
-                                </span>
-                            </td>
-                            <td>
-                                ${new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}<br>
-                                <small>${new Date(order.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</small>
-                            </td>
-                            <td>
-                                <div style="display: flex; gap: 5px;">
-                                    <form class="confirm-correction-form" data-order-id="${order.order_id}">
-                                        <input type="hidden" name="order_id" value="${order.order_id}">
-                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
-                                        <input type="hidden" name="ajax" value="confirm_correction">
-                                        <button type="submit" name="confirm_correction" class="btn btn-success btn-sm" data-order-id="${order.order_id}">
-                                            <i class="fas fa-check"></i> Confirm Correction
-                                        </button>
-                                    </form>
-                                    <a href="order_details.php?id=${order.order_id}" class="btn btn-info btn-sm">
-                                        <i class="fas fa-eye"></i> View
-                                    </a>
-                                </div>
-                            </td>
-                        `;
-                        tableBody.appendChild(tr);
-                    });
-                }
-                document.getElementById('pending-count').textContent = data.data.length;
-                const totalPending = data.data.reduce((sum, order) => sum + parseFloat(order.total), 0);
-                document.getElementById('total-pending-amount').textContent = `MWK${totalPending.toFixed(2)}`;
-            }
-        } catch (error) {
-            console.error('Error refreshing pending orders:', error);
-            this.showToast('Error refreshing pending orders', 'error');
-        }
-    }
-
-    async loadSalesReport(startDate, endDate) {
-        try {
-            const response = await fetch(`?ajax=sales_report_data&start_date=${startDate}&end_date=${endDate}`);
-            const data = await response.json();
-            const content = document.getElementById('sales-report-content');
-            if (data.status === 'success' && data.data.length > 0) {
-                content.innerHTML = `
-                    <div class="table-container">
-                        <table id="sales-report-table">
-                            <thead>
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Order Count</th>
-                                    <th>Total Sales</th>
-                                    <th>Payment Method</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${data.data.map(report => `
-                                    <tr>
-                                        <td>${new Date(report.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</td>
-                                        <td>${report.order_count}</td>
-                                        <td>MWK${Number(report.total_sales).toFixed(2)}</td>
-                                        <td>${this.capitalizeWords(report.payment_method.replace('_', ' '))}</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-            } else {
-                content.innerHTML = `
-                    <div style="text-align: center; padding: 40px;">
-                        <i class="fas fa-inbox" style="font-size: 4rem; color: var(--secondary-color); margin-bottom: 20px;"></i>
-                        <h3>No Sales Data</h3>
-                        <p>No sales data available for the selected date range.</p>
-                    </div>
-                `;
-            }
-        } catch (error) {
-            console.error('Error loading sales report:', error);
-            this.showToast('Error loading sales report', 'error');
-        }
-    }
-
-    showSection(sectionId) {
-        document.querySelectorAll('.content-section').forEach(section => {
-            section.classList.remove('active');
-        });
-        document.querySelectorAll('.nav-link').forEach(link => {
-            link.classList.remove('active');
-        });
-        document.getElementById(`${sectionId}-section`).classList.add('active');
-        document.querySelector(`.nav-link[href="#${sectionId}"]`).classList.add('active');
-        if (sectionId === 'pending-orders') {
-            this.refreshPendingOrdersData();
-        } else if (sectionId === 'completed-orders') {
-            this.refreshCompletedOrdersData();
-        } else if (sectionId === 'sales-report') {
-            const startDate = document.getElementById('start_date').value;
-            const endDate = document.getElementById('end_date').value;
-            this.loadSalesReport(startDate, endDate);
-        }
-    }
-
-    async refreshCompletedOrdersData() {
-        try {
-            const response = await fetch('?ajax=completed_orders_data');
-            const data = await response.json();
-            if (data.status === 'success') {
-                const tableBody = document.querySelector('#completed-orders-table tbody');
-                tableBody.innerHTML = '';
-                if (data.data.length === 0) {
-                    tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No completed orders.</td></tr>';
-                } else {
-                    data.data.forEach(order => {
-                        const tr = document.createElement('tr');
-                        tr.dataset.orderId = order.order_id;
-                        tr.innerHTML = `
-                            <td><strong>#${order.order_id}</strong></td>
-                            <td>${order.first_name || ''} ${order.last_name || ''}</td>
-                            <td><strong class="order-amount">MWK${Number(order.total).toFixed(2)}</strong></td>
-                            <td>
-                                <span class="payment-method ${order.payment_method}">
-                                    <i class="${this.getPaymentIcon(order.payment_method)}"></i>
-                                    ${this.capitalizeWords(order.payment_method.replace('_', ' '))}
-                                </span>
-                            </td>
-                            <td>
-                                ${new Date(order.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}<br>
-                                <small>${new Date(order.updated_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</small>
-                            </td>
-                            <td>
-                                <div style="display: flex; gap: 5px;">
-                                    <a href="order_details.php?id=${order.order_id}" class="btn btn-info btn-sm">
-                                        <i class="fas fa-eye"></i> View
-                                    </a>
-                                    <button class="btn btn-primary btn-sm" data-action="print-receipt" data-order-id="${order.order_id}">
-                                        <i class="fas fa-print"></i> Print
-                                    </button>
-                                </div>
-                            </td>
-                        `;
-                        tableBody.appendChild(tr);
-                    });
-                }
-                document.getElementById('completed-count').textContent = data.data.length;
-                const totalCompleted = data.data.reduce((sum, order) => sum + parseFloat(order.total), 0);
-                document.getElementById('total-completed-amount').textContent = totalCompleted.toFixed(2);
-            }
-        } catch (error) {
-            console.error('Error refreshing completed orders:', error);
-            this.showToast('Error refreshing completed orders', 'error');
-        }
-    }
-
-    getPaymentIcon(paymentMethod) {
-        const icons = {
-            'cash': 'fas fa-money-bill-wave',
-            'mpamba': 'fas fa-mobile-alt',
-            'airtel_money': 'fas fa-mobile-alt',
-            'card': 'fas fa-credit-card',
-            'Mobile Transfer': 'fas fa-mobile-alt'
-        };
-        return icons[paymentMethod] || 'fas fa-question';
-    }
-
-    capitalizeWords(str) {
-        return str.replace(/\b\w/g, c => c.toUpperCase());
-    }
-
-    showToast(message, type) {
-        const toast = document.createElement('div');
-        toast.className = `toast toast-${type}`;
-        toast.textContent = message;
-        document.getElementById('notification-container').appendChild(toast);
-        setTimeout(() => {
-            toast.remove();
-        }, 3000);
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    window.dashboard = new CashierDashboard();
-    const urlParams = new URLSearchParams(window.location.search);
-    const section = urlParams.get('section') || 'dashboard';
-    dashboard.showSection(section);
-    const salesReportForm = document.getElementById('sales-report-form');
-    if (salesReportForm) {
-        salesReportForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const startDate = document.getElementById('start_date').value;
-            const endDate = document.getElementById('end_date').value;
-            await dashboard.loadSalesReport(startDate, endDate);
-        });
-    }
-    const downloadCsvBtn = document.getElementById('download-csv-btn');
-    if (downloadCsvBtn) {
-        downloadCsvBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            const startDate = document.getElementById('start_date').value;
-            const endDate = document.getElementById('end_date').value;
-            window.location.href = `?ajax=sales_report_data&start_date=${startDate}&end_date=${endDate}&download=1`;
-        });
-    }
-    if (section === 'sales-report') {
-        const startDate = document.getElementById('start_date').value;
-        const endDate = document.getElementById('end_date').value;
-        dashboard.loadSalesReport(startDate, endDate);
-    }
-    document.querySelectorAll('.confirm-correction-form').forEach(form => {
-        form.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(form);
-            formData.append('ajax', 'confirm_correction');
-            try {
-                const response = await fetch('', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-                if (data.status === 'success') {
-                    dashboard.showToast(data.message, 'success');
-                    const orderRow = form.closest('tr');
-                    if (orderRow) {
-                        orderRow.remove();
-                        const pendingCountEl = document.getElementById('pending-count');
-                        if (pendingCountEl) {
-                            pendingCountEl.textContent = parseInt(pendingCountEl.textContent) - 1;
-                        }
-                        dashboard.refreshPendingOrdersData();
-                    }
-                    dashboard.refreshStats();
-                } else {
-                    dashboard.showToast(data.message, 'error');
-                }
-            } catch (error) {
-                console.error('Error confirming correction:', error);
-                dashboard.showToast('Error confirming correction', 'error');
-            }
-        });
-    });
-});
-</script>
 </body>
 </html>
 <?php

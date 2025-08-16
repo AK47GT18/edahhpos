@@ -101,26 +101,33 @@ function getCustomerPendingOrders() {
     
     try {
         $stmt = $conn->prepare("
-            SELECT o.order_id, o.total_amount as total, o.payment_method, o.created_at,
-                   c.first_name, c.last_name, c.email
+            SELECT 
+                o.order_id, 
+                o.user_id,
+                COALESCE(o.total_amount, 0) as total, 
+                o.payment_method, 
+                o.created_at,
+                o.status,
+                o.collected
             FROM orders o 
-            LEFT JOIN customers c ON o.customer_id = c.customer_id 
-            WHERE o.status = 'pending'
+            WHERE o.status = 'completed' 
+            AND o.collected = 'no'
             ORDER BY o.created_at DESC
         ");
+
+        if (!$stmt) {
+            error_log("Failed to prepare pending orders query: " . $conn->error);
+            return [];
+        }
+
         $stmt->execute();
         $result = $stmt->get_result();
-        
-        $orders = [];
-        while ($row = $result->fetch_assoc()) {
-            $orders[] = $row;
-        }
-        
+        $orders = $result->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
+
         return $orders;
-        
     } catch (Exception $e) {
-        error_log("Error fetching customer pending orders: " . $e->getMessage());
+        error_log("Error fetching pending orders: " . $e->getMessage());
         return [];
     }
 }
@@ -133,27 +140,33 @@ function getCompletedOrders($limit = 50) {
     
     try {
         $stmt = $conn->prepare("
-            SELECT o.order_id, o.total_amount as total, o.payment_method, o.created_at, o.updated_at,
-                   c.first_name, c.last_name, c.email
+            SELECT 
+                o.order_id, 
+                o.user_id,
+                COALESCE(o.total_amount, 0) as total, 
+                o.payment_method, 
+                o.created_at, 
+                o.status,
+                o.collected
             FROM orders o 
-            LEFT JOIN customers c ON o.customer_id = c.customer_id 
             WHERE o.status = 'completed' 
-            ORDER BY o.updated_at DESC
+            AND o.collected = 'yes'
+            ORDER BY o.created_at DESC
             LIMIT ?
         ");
-        
+
+        if (!$stmt) {
+            error_log("Failed to prepare completed orders query: " . $conn->error);
+            return [];
+        }
+
         $stmt->bind_param("i", $limit);
         $stmt->execute();
         $result = $stmt->get_result();
-        
-        $orders = [];
-        while ($row = $result->fetch_assoc()) {
-            $orders[] = $row;
-        }
-        
+        $orders = $result->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
+
         return $orders;
-        
     } catch (Exception $e) {
         error_log("Error fetching completed orders: " . $e->getMessage());
         return [];
@@ -624,5 +637,19 @@ function createOrder($user_id, $cart_items, $payment_method, $total, $customer_i
         error_log("Error creating order for user #$user_id: " . $e->getMessage());
         return false;
     }
+}
+
+/**
+ * Mark order as collected
+ */
+function markOrderAsCollected($order_id) {
+    global $conn;
+    $stmt = $conn->prepare("UPDATE orders SET collected = 'yes', updated_at = NOW() WHERE order_id = ? AND collected != 'yes'");
+    if (!$stmt) return false;
+    $stmt->bind_param('i', $order_id);
+    $success = $stmt->execute();
+    $affected = $stmt->affected_rows;
+    $stmt->close();
+    return $success && ($affected > 0);
 }
 ?>
