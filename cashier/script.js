@@ -223,52 +223,16 @@ class CashierDashboard {
         });
 
         document.addEventListener('click', e => {
-            if (e.target.closest('.mark-collected')) {
-                const orderId = e.target.closest('.mark-collected').dataset.orderId;
-                this.markOrderAsCollected(orderId);
-            }
-        });
-
-        document.addEventListener('click', async (e) => {
-            const collectBtn = e.target.closest('.mark-collected');
-            if (collectBtn) {
+            const btn = e.target.closest('.mark-collected');
+            if (btn) {
                 e.preventDefault();
-                collectBtn.disabled = true;
-                collectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Marking...';
-
-                try {
-                    const orderId = collectBtn.dataset.orderId;
-                    const csrfToken = collectBtn.dataset.csrfToken;
-
-                    const formData = new FormData();
-                    formData.append('ajax', 'mark_collected');
-                    formData.append('order_id', orderId);
-                    formData.append('csrf_token', csrfToken);
-
-                    const response = await fetch('', {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    const data = await response.json();
-
-                    if (data.status === 'success') {
-                        dashboard.showToast(data.message, 'success');
-                        const orderRow = collectBtn.closest('tr');
-                        if (orderRow) orderRow.remove();
-                        dashboard.refreshPendingOrdersData();
-                        dashboard.refreshCompletedOrdersData();
-                        dashboard.refreshStats();
-                    } else {
-                        dashboard.showToast(data.message || 'Failed to mark as collected', 'error');
-                        collectBtn.disabled = false;
-                        collectBtn.innerHTML = '<i class="fas fa-box"></i> Mark as Collected';
-                    }
-                } catch (error) {
-                    dashboard.showToast('Error marking as collected', 'error');
-                    collectBtn.disabled = false;
-                    collectBtn.innerHTML = '<i class="fas fa-box"></i> Mark as Collected';
-                }
+                const orderId = btn.dataset.orderId;
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Marking...';
+                this.markOrderAsCollected(orderId).finally(() => {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-box"></i> Mark as Collected';
+                });
             }
         });
     }
@@ -723,7 +687,8 @@ class CashierDashboard {
             formData.append('order_id', orderId);
             formData.append('csrf_token', document.querySelector('meta[name="csrf-token"]').content);
 
-            const response = await fetch('', {
+            // FIX: Use the correct endpoint for marking as collected
+            const response = await fetch('orders_manager.php', {
                 method: 'POST',
                 body: formData
             });
@@ -732,7 +697,9 @@ class CashierDashboard {
             
             if (data.status === 'success') {
                 this.showToast(data.message, 'success');
-                this.refreshCompletedOrdersData();
+                this.loadCompletedOrders();
+                this.refreshPendingOrdersData();
+                this.refreshStats();
             } else {
                 this.showToast(data.message, 'error');
             }

@@ -20,12 +20,13 @@ $order_id = filter_input(INPUT_GET, 'id', FILTER_SANITIZE_NUMBER_INT);
 $order = null;
 
 try {
+    // Fetch order with pending status and not yet collected
     $stmt = $conn->prepare(
-        "SELECT o.order_id, o.total_amount as total, o.payment_method, o.created_at, 
-                u.first_name, u.last_name, u.username 
+        "SELECT o.order_id, o.total_amount as total, o.payment_method, o.created_at, o.collected, 
+                u.first_name, u.last_name
          FROM orders o 
          LEFT JOIN users u ON o.user_id = u.user_id 
-         WHERE o.order_id = ? AND o.status = 'pending' AND o.payment_status = 'pending'"
+         WHERE o.order_id = ? AND o.status = 'pending' AND o.collected = 'no'"
     );
     $stmt->bind_param("i", $order_id);
     $stmt->execute();
@@ -34,38 +35,46 @@ try {
     $stmt->close();
 
     if (!$order) {
-        $_SESSION['message'] = "Order not found or already processed.";
+        $_SESSION['message'] = "Order not found, already processed, or already collected.";
         $_SESSION['message_type'] = "danger-color";
         header("Location: dashboard.php");
         exit;
     }
 
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['confirm_payment'])) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['confirm_collection'])) {
         $csrf_token = filter_input(INPUT_POST, 'csrf_token', FILTER_SANITIZE_STRING);
         if (!validateCsrfToken($csrf_token)) {
             $_SESSION['message'] = "Invalid CSRF token.";
             $_SESSION['message_type'] = "danger-color";
-            header("Location: confirm_payment.php?id=$order_id");
+            header("Location: confirm_correction.php?id=$order_id");
             exit;
         }
 
         try {
-            $payment_result = confirmPayment($order_id);
-            if ($payment_result['success']) {
-                $_SESSION['message'] = "Payment confirmed for order #$order_id.";
+            // Mark order as collected and update status to completed
+            $stmt = $conn->prepare("UPDATE orders SET collected = 'yes', status = 'completed', updated_at = NOW() WHERE order_id = ? AND collected = 'no'");
+            $stmt->bind_param("i", $order_id);
+            $stmt->execute();
+            $affected = $stmt->affected_rows;
+            $stmt->close();
+
+            if ($affected > 0) {
+                // Log activity
+                logActivity($_SESSION['user_id'], "Order #$order_id marked as collected.", 'collection_confirmation');
+                $_SESSION['message'] = "Order #$order_id marked as collected.";
                 $_SESSION['message_type'] = "success-color";
                 header("Location: completed_orders.php");
                 exit;
             } else {
-                $_SESSION['message'] = "Failed to confirm payment for order #$order_id: " . ($payment_result['error'] ?? 'Unknown error');
+                $_SESSION['message'] = "Order #$order_id could not be marked as collected. It may already be collected or completed.";
                 $_SESSION['message_type'] = "danger-color";
-                header("Location: confirm_payment.php?id=$order_id");
+                header("Location: confirm_correction.php?id=$order_id");
                 exit;
             }
         } catch (Exception $e) {
-            $_SESSION['message'] = "Error confirming payment: " . $e->getMessage();
+            $_SESSION['message'] = "Error marking order as collected: " . $e->getMessage();
             $_SESSION['message_type'] = "danger-color";
-            header("Location: confirm_payment.php?id=$order_id");
+            header("Location: confirm_correction.php?id=$order_id");
             exit;
         }
     }
@@ -83,7 +92,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Confirm Payment | Auntie Eddah POS</title>
+    <title>Confirm Collection | Auntie Eddah POS</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="style.css">
 </head>
@@ -108,7 +117,7 @@ try {
     <main class="main-content">
         <div class="content">
             <section class="section">
-                <h2><i class="fas fa-money-check-alt"></i> Confirm Payment for Order #<?php echo $order['order_id']; ?></h2>
+                <h2><i class="fas fa-box"></i> Confirm Collection for Order #<?php echo $order['order_id']; ?></h2>
                 <?php if (isset($_SESSION['message'])): ?>
                     <p class="<?php echo $_SESSION['message_type']; ?>"><?php echo $_SESSION['message']; unset($_SESSION['message'], $_SESSION['message_type']); ?></p>
                 <?php endif; ?>
@@ -118,7 +127,7 @@ try {
                 <p><strong>Created At:</strong> <?php echo $order['created_at']; ?></p>
                 <form action="" method="POST">
                     <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
-                    <button type="submit" name="confirm_payment" class="btn"><i class="fas fa-check"></i> Confirm Payment</button>
+                    <button type="submit" name="confirm_collection" class="btn"><i class="fas fa-box"></i> Confirm Collection</button>
                     <a href="dashboard.php" class="btn danger-btn"><i class="fas fa-times"></i> Cancel</a>
                 </form>
             </section>
