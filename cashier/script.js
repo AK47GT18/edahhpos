@@ -9,7 +9,6 @@ class CashierDashboard {
         this.cart = [];
         this.csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
         this.init();
-        this.initConfirmPaymentButtons();
     }
 
     init() {
@@ -17,6 +16,18 @@ class CashierDashboard {
         this.setupKeyboardShortcuts();
         this.startAutoRefresh();
         this.focusBarcodeInput();
+
+        // initial refresh
+        this.refreshDashboardStats();
+        this.refreshPendingOrdersData();
+        this.refreshCompletedOrdersData();
+
+        // auto refresh
+        setInterval(() => {
+            this.refreshDashboardStats();
+            this.refreshPendingOrdersData();
+            this.refreshCompletedOrdersData();
+        }, 30000);
     }
 
     initConfirmPaymentButtons() {
@@ -525,6 +536,8 @@ class CashierDashboard {
                 this.updateCartTotal(0);
                 this.updateCartBadge(0);
                 this.showSection('dashboard');
+                this.refreshPendingOrdersData();
+                this.refreshCompletedOrdersData();
             } else if (data.status === 'pending' && paymentMethod === 'Mobile Transfer') {
                 // Initiate PayChangu payment
                 const email = window.sessionUserEmail || 'zechaliahjmbuwa99@gmail.com';
@@ -572,8 +585,132 @@ class CashierDashboard {
         }
     }
 
+    async refreshDashboardStats() {
+        try {
+            const resp = await fetch('dashboard.php?ajax=stats');
+            const data = await resp.json();
+            if (data.status === 'success' && data.stats) {
+                const s = data.stats;
+                const el = id => document.getElementById(id);
+                if (el('orders-today')) el('orders-today').textContent = s.orders_today;
+                if (el('total-orders')) el('total-orders').textContent = s.total_orders;
+                if (el('pending-count')) el('pending-count').textContent = s.pending_payments;
+                if (el('completed-count')) el('completed-count').textContent = s.completed;
+                if (el('transactions-count')) el('transactions-count').textContent = s.successful_transactions;
+                if (el('total-sales')) el('total-sales').textContent = 'MWK' + Number(s.total_sales).toLocaleString();
+                if (el('revenue-today')) el('revenue-today').textContent = 'MWK' + Number(s.revenue_today).toLocaleString();
+            }
+        } catch (err) {
+            console.error('Failed to refresh dashboard stats', err);
+        }
+    }
+
     async refreshPendingOrdersData() {
-        await this.loadPendingOrders();
+        try {
+            const resp = await fetch('dashboard.php?ajax=pending_orders_data');
+            const data = await resp.json();
+            if (data.status === 'success') {
+                this.renderPendingOrdersTable(data.data || []);
+            }
+        } catch (err) {
+            console.error('Failed to refresh pending orders', err);
+        }
+    }
+
+    async refreshCompletedOrdersData() {
+        try {
+            const resp = await fetch('dashboard.php?ajax=completed_orders_data');
+            const data = await resp.json();
+            if (data.status === 'success') {
+                this.renderCompletedOrdersTable(data.data || []);
+            }
+        } catch (err) {
+            console.error('Failed to refresh completed orders', err);
+        }
+    }
+
+    renderPendingOrdersTable(orders) {
+        const tbody = document.querySelector('#pending-orders-table tbody');
+        const badge = document.getElementById('pending-count');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!orders.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center">No pending orders</td></tr>';
+            if (badge) badge.textContent = '0';
+            return;
+        }
+        orders.forEach(o => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>#${o.order_id}</td>
+                <td>MWK ${Number(o.total_amount || o.total).toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+                <td>${o.payment_method}</td>
+                <td>${o.created_at}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary mark-collected" data-id="${o.order_id}">Mark Collected</button>
+                    <a href="order_details.php?id=${o.order_id}" class="btn btn-sm btn-info">View</a>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+        if (badge) badge.textContent = orders.length;
+        // bind mark collected
+        tbody.querySelectorAll('.mark-collected').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const id = btn.getAttribute('data-id');
+                await this.markOrderCollected(id);
+            });
+        });
+    }
+
+    renderCompletedOrdersTable(orders) {
+        const tbody = document.querySelector('#completed-orders-table tbody');
+        const badge = document.getElementById('completed-count');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!orders.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center">No completed orders</td></tr>';
+            if (badge) badge.textContent = '0';
+            return;
+        }
+        orders.forEach(o => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>#${o.order_id}</td>
+                <td>MWK ${Number(o.total_amount || o.total).toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+                <td>${o.payment_method}</td>
+                <td>${o.created_at}</td>
+                <td>
+                    <a href="order_details.php?id=${o.order_id}" class="btn btn-sm btn-info">View</a>
+                    <button class="btn btn-sm btn-secondary print-order" data-id="${o.order_id}">Print</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+        if (badge) badge.textContent = orders.length;
+    }
+
+    async markOrderCollected(orderId) {
+        try {
+            const form = new FormData();
+            form.append('ajax', 'mark_collected');
+            form.append('order_id', orderId);
+            form.append('csrf_token', window.csrfToken || '');
+
+            const resp = await fetch('dashboard.php', { method: 'POST', body: form });
+            const data = await resp.json();
+            if (data.status === 'success') {
+                this.showToast(data.message || 'Order marked collected', 'success');
+                await this.refreshPendingOrdersData();
+                await this.refreshCompletedOrdersData();
+                await this.refreshDashboardStats();
+            } else {
+                this.showToast(data.message || 'Failed to mark collected', 'error');
+            }
+        } catch (err) {
+            console.error('Error marking collected', err);
+            this.showToast('Error marking order collected', 'error');
+        }
     }
 
     async loadCompletedOrders() {
@@ -658,6 +795,11 @@ class CashierDashboard {
             if (this.currentSection === 'completed-orders') {
                 this.loadCompletedOrders();
             }
+        }, 30000);
+
+        setInterval(() => {
+            dashboard.refreshPendingOrdersData();
+            dashboard.refreshCompletedOrdersData();
         }, 30000);
     }
 
@@ -782,46 +924,7 @@ class CashierDashboard {
 
 // Initialize dashboard when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    if (!window.dashboard) {
-        window.dashboard = new CashierDashboard();
-        const urlParams = new URLSearchParams(window.location.search);
-        const section = urlParams.get('section') || 'dashboard';
-        window.dashboard.showSection(section);
-    }
-
-    function updateDashboardStats() {
-        fetch('dashboard.php?ajax=stats')
-            .then(res => res.json())
-            .then(data => {
-                if (data.status === 'success' && data.stats) {
-                    document.getElementById('orders-today').textContent = data.stats.orders_today;
-                    document.getElementById('pending-payments').textContent = data.stats.pending_payments;
-                    document.getElementById('transactions-count').textContent = data.stats.transactions_count;
-                    document.getElementById('total-sales').textContent = 'MWK' + Number(data.stats.total_sales_today).toLocaleString(undefined, {minimumFractionDigits: 2});
-                }
-            });
-    }
-
-    // Call on page load
-    document.addEventListener('DOMContentLoaded', function() {
-        updateDashboardStats();
-        // Refresh every 30 seconds
-        setInterval(updateDashboardStats, 30000);
-    });
-
-    const payBtn = document.getElementById('process-payment-btn');
-    if (payBtn) {
-        payBtn.addEventListener('click', async function() {
-            // Get payment info from the server (PHP session/config)
-            const resp = await fetch('get_payment_info.php');
-            const data = await resp.json();
-            if (data.status !== 'success') {
-                alert('Could not get payment info.');
-                return;
-            }
-            makePayment(data.payment);
-        });
-    }
+    window.dashboard = new CashierDashboard();
 });
 
 function makePayment(payment) {

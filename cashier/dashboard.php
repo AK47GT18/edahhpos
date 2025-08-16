@@ -398,57 +398,74 @@ if (isset($_POST['ajax'])) {
 if (isset($_GET['ajax'])) {
     header('Content-Type: application/json');
 
-    if ($_GET['ajax'] === 'stats') {
-        $stats = getDashboardStats();
+    $ajax = $_GET['ajax'];
+
+    if ($ajax === 'stats') {
+        // Today's overview and totals
+        $orders_today_q = "SELECT COUNT(*) AS cnt FROM orders WHERE DATE(created_at) = CURDATE()";
+        $total_orders_q = "SELECT COUNT(*) AS cnt FROM orders";
+        $pending_q = "SELECT COUNT(*) AS cnt FROM orders WHERE status = 'pending' OR status = 'awaiting_confirmation'";
+        $completed_q = "SELECT COUNT(*) AS cnt FROM orders WHERE status = 'completed' OR collected = 1";
+        $successful_q = "SELECT COUNT(*) AS cnt FROM orders WHERE status = 'completed'";
+        $total_sales_q = "SELECT COALESCE(SUM(total_amount),0) AS sumv FROM orders";
+        $revenue_today_q = "SELECT COALESCE(SUM(total_amount),0) AS sumv FROM orders WHERE DATE(created_at) = CURDATE()";
+
+        $orders_today = (int)$conn->query($orders_today_q)->fetch_assoc()['cnt'];
+        $total_orders = (int)$conn->query($total_orders_q)->fetch_assoc()['cnt'];
+        $pending = (int)$conn->query($pending_q)->fetch_assoc()['cnt'];
+        $completed = (int)$conn->query($completed_q)->fetch_assoc()['cnt'];
+        $successful = (int)$conn->query($successful_q)->fetch_assoc()['cnt'];
+        $total_sales = (float)$conn->query($total_sales_q)->fetch_assoc()['sumv'];
+        $revenue_today = (float)$conn->query($revenue_today_q)->fetch_assoc()['sumv'];
+
         echo json_encode([
             'status' => 'success',
-            'stats' => $stats,
-            'message' => 'Stats retrieved successfully'
-        ]);
-        exit;
-    } elseif ($_GET['ajax'] === 'product_details') {
-        $barcode = sanitizeInput($_GET['barcode'] ?? '');
-        $products = getProductByBarcode($barcode);
-        echo json_encode([
-            'status' => !empty($products) ? 'success' : 'error',
-            'data' => !empty($products) ? [
-                'product_id' => $products[0]['product_id'],
-                'name' => $products[0]['name'],
-                'price' => $products[0]['price'],
-                'category' => $products[0]['category']
-            ] : [],
-            'message' => !empty($products) ? 'Product found' : "Product not found for barcode: $barcode"
-        ]);
-        exit;
-    } elseif ($_GET['ajax'] === 'completed_orders_data') {
-        $completed_orders = getCompletedOrders();
-        error_log("Sending completed orders response: " . json_encode($completed_orders));
-        echo json_encode(['status' => 'success', 'data' => $completed_orders]);
-        exit;
-    } elseif ($_GET['ajax'] === 'pending_orders_data') {
-        $pending_orders = getCustomerPendingOrders();
-        error_log("Sending pending orders response: " . json_encode($pending_orders));
-        echo json_encode(['status' => 'success', 'data' => $pending_orders]);
-        exit;
-    } elseif ($_GET['ajax'] === 'sales_report_data') {
-        $start_date = filter_input(INPUT_GET, 'start_date', FILTER_SANITIZE_STRING) ?: date('Y-m-d', strtotime('-7 days'));
-        $end_date = filter_input(INPUT_GET, 'end_date', FILTER_SANITIZE_STRING) ?: date('Y-m-d');
-        $report = getSalesReport($start_date, $end_date);
-        echo json_encode(['status' => 'success', 'data' => $report]);
-        exit;
-    } elseif ($_GET['ajax'] === 'cart_data') {
-        $cart_total = 0;
-        foreach ($_SESSION['cart'] as $item) {
-            $cart_total += $item['price'] * $item['quantity'];
-        }
-        echo json_encode([
-            'status' => 'success',
-            'cart' => $_SESSION['cart'],
-            'cart_total' => number_format($cart_total, 2),
-            'cart_count' => count($_SESSION['cart'])
+            'stats' => [
+                'orders_today' => $orders_today,
+                'total_orders' => $total_orders,
+                'pending_payments' => $pending,
+                'completed' => $completed,
+                'successful_transactions' => $successful,
+                'total_sales' => number_format($total_sales, 2, '.', ','),
+                'revenue_today' => number_format($revenue_today, 2, '.', ',')
+            ]
         ]);
         exit;
     }
+
+    if ($ajax === 'pending_orders_data') {
+        $rows = [];
+        $sql = "SELECT order_id, user_id, total, payment_method, status, collected, created_at, total_amount
+                FROM orders
+                WHERE (status = 'pending' OR status = 'awaiting_confirmation' OR collected = 0)
+                ORDER BY created_at DESC
+                LIMIT 200";
+        $res = $conn->query($sql);
+        while ($r = $res->fetch_assoc()) {
+            $rows[] = $r;
+        }
+        echo json_encode(['status' => 'success', 'data' => $rows]);
+        exit;
+    }
+
+    if ($ajax === 'completed_orders_data') {
+        $rows = [];
+        $sql = "SELECT order_id, user_id, total, payment_method, status, collected, created_at, total_amount
+                FROM orders
+                WHERE status = 'completed' OR collected = 1
+                ORDER BY created_at DESC
+                LIMIT 200";
+        $res = $conn->query($sql);
+        while ($r = $res->fetch_assoc()) {
+            $rows[] = $r;
+        }
+        echo json_encode(['status' => 'success', 'data' => $rows]);
+        exit;
+    }
+
+    // unknown ajax
+    echo json_encode(['status' => 'error', 'message' => 'Invalid ajax action']);
+    exit;
 }
 
 // Function to verify Paychangu payment
