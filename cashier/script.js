@@ -525,6 +525,25 @@ class CashierDashboard {
                 this.updateCartTotal(0);
                 this.updateCartBadge(0);
                 this.showSection('dashboard');
+            } else if (data.status === 'pending' && paymentMethod === 'Mobile Transfer') {
+                // Initiate PayChangu payment
+                const email = window.sessionUserEmail || 'zechaliahjmbuwa99@gmail.com';
+                const firstName = window.sessionUserFirstName || 'CASHIER';
+                const lastName = window.sessionUserLastName || 'A';
+                makePayment({
+                    public_key: "PUB-2Gv1hPxqu1KqhbH3VJ3886NlQxEZeXji",
+                    tx_ref: data.tx_ref,
+                    amount: parseFloat(data.total.replace(/,/g, '')),
+                    currency: "MWK",
+                    callback_url: "http://localhost/EdahhPos/cashier/callback.php",
+                    return_url: "http://localhost/EdahhPos/cashier/return.php",
+                    email: email,
+                    first_name: firstName,
+                    last_name: lastName,
+                    title: "Auntie Eddah POS Payment",
+                    description: "Payment for your order at Auntie Eddah POS",
+                    uuid: (window.sessionUUID || 'uuid')
+                });
             } else {
                 this.showToast(data.message, 'error');
             }
@@ -769,4 +788,62 @@ document.addEventListener('DOMContentLoaded', () => {
         const section = urlParams.get('section') || 'dashboard';
         window.dashboard.showSection(section);
     }
+
+    function updateDashboardStats() {
+        fetch('dashboard.php?ajax=stats')
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success' && data.stats) {
+                    document.getElementById('orders-today').textContent = data.stats.orders_today;
+                    document.getElementById('pending-payments').textContent = data.stats.pending_payments;
+                    document.getElementById('transactions-count').textContent = data.stats.transactions_count;
+                    document.getElementById('total-sales').textContent = 'MWK' + Number(data.stats.total_sales_today).toLocaleString(undefined, {minimumFractionDigits: 2});
+                }
+            });
+    }
+
+    // Call on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        updateDashboardStats();
+        // Refresh every 30 seconds
+        setInterval(updateDashboardStats, 30000);
+    });
+
+    const payBtn = document.getElementById('process-payment-btn');
+    if (payBtn) {
+        payBtn.addEventListener('click', async function() {
+            // Get payment info from the server (PHP session/config)
+            const resp = await fetch('get_payment_info.php');
+            const data = await resp.json();
+            if (data.status !== 'success') {
+                alert('Could not get payment info.');
+                return;
+            }
+            makePayment(data.payment);
+        });
+    }
 });
+
+function makePayment(payment) {
+    PaychanguCheckout({
+        "public_key": payment.public_key,
+        "tx_ref": payment.tx_ref,
+        "amount": payment.amount,
+        "currency": "MWK",
+        "callback_url": payment.callback_url,
+        "return_url": payment.return_url,
+        "customer": {
+            "email": payment.email,
+            "first_name": payment.first_name,
+            "last_name": payment.last_name
+        },
+        "customization": {
+            "title": payment.title,
+            "description": payment.description
+        },
+        "meta": {
+            "uuid": payment.uuid,
+            "response": "Response"
+        }
+    });
+}

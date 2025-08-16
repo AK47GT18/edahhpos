@@ -523,10 +523,12 @@ foreach ($_SESSION['cart'] as $item) {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
     <link rel="stylesheet" href="style.css">
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://in.paychangu.com/js/popup.js"></script>
 </head>
 <body>
 
+    <div id="wrapper">
     <header role="banner" class="header">
         <div class="header-content">
             <div class="logo">
@@ -796,7 +798,7 @@ foreach ($_SESSION['cart'] as $item) {
                                     <option value="Mobile Transfer">Mobile Transfer</option>
                                 </select>
                             </div>
-                            <button id="process-payment-btn" class="btn btn-success btn-block" disabled>
+                            <button id="process-payment-btn" class="btn btn-success btn-block">
                                 <i class="fas fa-money-bill-wave"></i> Process Payment
                             </button>
                             <button id="clear-cart-btn" class="btn btn-warning btn-block">
